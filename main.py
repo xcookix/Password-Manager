@@ -486,7 +486,6 @@ _BANNERS = [
 |                     PASSWORD MANAGER                         |
 |   encrypted vaults . backups . recovery . portable exports   |
 |                         by cookix                            |
-e
 +==============================================================+
 """,
 ]
