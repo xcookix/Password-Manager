@@ -43,9 +43,32 @@ python3 -m venv .venv
 .venv/bin/python main.py
 ```
 
-Email recovery uses Gmail API OAuth. Place your OAuth client file at `credentials.json` in the project folder. On the first email recovery attempt, the app opens a Google approval page and stores the resulting token at `data/gmail_token.json`.
+## Email Recovery Setup
 
-Important for existing vaults: log in once with the current master password after installing this version. That creates `vault_key.bin`, `recovery_secret.bin`, and `recovery_vault_key.bin`, which are required for password-preserving email recovery.
+Email recovery is optional. The password manager works normally without it, but if you want OTP-based recovery via email, you must provide a Google OAuth client credentials file.
+
+- Generate your own Gmail API OAuth credentials in Google Cloud Console.
+- Create a project, enable the Gmail API, and create an OAuth 2.0 Client ID.
+- Download the JSON file and save it as `credentials.json` in the project root.
+- Alternatively, set `PM_GMAIL_CREDENTIALS` to point to your own credentials file if you do not want to use `credentials.json`.
+
+Important:
+
+- `credentials.json` contains sensitive OAuth client secrets.
+- Do not commit it to GitHub or publish it in the repository.
+- Add it to `.gitignore` if you are sharing this project.
+
+On first email recovery use:
+
+- the app opens a Google authorization page
+- it stores the OAuth token at `data/gmail_token.json`
+- it sends a one-time code to the registered recovery email
+
+Also note:
+
+- existing vaults should be logged into once with the current master password after installing this version
+- this creates `vault_key.bin`, `recovery_secret.bin`, and `recovery_vault_key.bin`
+- those files are required for password-preserving email recovery
 
 ## Usage
 
