@@ -243,6 +243,17 @@ class PasswordManager:
         )
         return [self._resolve_row(row) for row in cur.fetchall()]
 
+    def clear_all_passwords(self) -> bool:
+        """Remove all encrypted vault entries and unused categories."""
+        try:
+            with self.db.conn:
+                self.db.conn.execute("DELETE FROM passwords")
+                self.db.conn.execute("DELETE FROM categories")
+            return True
+        except sqlite3.Error as exc:
+            print(f"Error clearing password vault: {exc}")
+            return False
+
     # -- categories --------------------------------------------------------
 
     def _get_or_create_category_id(self, name: str) -> int:

@@ -8,7 +8,8 @@ Design notes:
   clause can always reference them safely.
 - Atomic restore: files are extracted to a temp directory and only moved
   into place after all validation passes.
-- Backup archives contain passwords.db, salt.bin, and canary.bin so a
+- Backup archives contain passwords.db, salt.bin, canary.bin, and key-wrap
+  files when present so a
   restore is always self-contained.
 """
 
@@ -17,12 +18,36 @@ import shutil
 import zipfile
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Iterable, Optional, TypeVar
+
+try:
+    from tqdm import tqdm
+except ImportError:  # pragma: no cover - fallback for bootstrap runs
+    tqdm = None
 
 
 _REQUIRED_FILES = {"passwords.db", "salt.bin", "canary.bin"}
-_OPTIONAL_FILES = {"security_config.json"}
+_OPTIONAL_FILES = {
+    "security_config.json",
+    "vault_key.bin",
+    "recovery_secret.bin",
+    "recovery_vault_key.bin",
+}
 _BACKUP_VERSION = "2"
+T = TypeVar("T")
+
+
+def _progress(items: Iterable[T], description: str, total: Optional[int] = None) -> Iterable[T]:
+    if tqdm is None:
+        return items
+    return tqdm(
+        items,
+        desc=description,
+        total=total,
+        unit="file",
+        dynamic_ncols=True,
+        leave=False,
+    )
 
 
 class StorageManager:
@@ -32,6 +57,9 @@ class StorageManager:
         self.salt_path = self.base_dir / "salt.bin"
         self.canary_path = self.base_dir / "canary.bin"
         self.security_config_path = self.base_dir / "security_config.json"
+        self.vault_key_path = self.base_dir / "vault_key.bin"
+        self.recovery_secret_path = self.base_dir / "recovery_secret.bin"
+        self.recovery_vault_key_path = self.base_dir / "recovery_vault_key.bin"
         self._ensure_dirs()
 
     # ------------------------------------------------------------------
@@ -63,22 +91,24 @@ class StorageManager:
 
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for src_path, arc_name in [
+                files = [
                     (self.db_path, "passwords.db"),
                     (self.salt_path, "salt.bin"),
                     (self.canary_path, "canary.bin"),
-                ]:
+                    (self.security_config_path, "security_config.json"),
+                    (self.vault_key_path, "vault_key.bin"),
+                    (self.recovery_secret_path, "recovery_secret.bin"),
+                    (self.recovery_vault_key_path, "recovery_vault_key.bin"),
+                ]
+                files = [(src_path, arc_name) for src_path, arc_name in files if src_path.exists()]
+                for src_path, arc_name in _progress(files, "Creating backup", total=len(files)):
                     if src_path.exists():
                         zf.write(src_path, arc_name)
-                
-                # Include security question if it exists (optional)
-                if self.security_config_path.exists():
-                    zf.write(self.security_config_path, "security_config.json")
 
                 metadata = {
                     "created": datetime.now().isoformat(),
                     "version": _BACKUP_VERSION,
-                    "files": list(_REQUIRED_FILES),
+                    "files": sorted(_REQUIRED_FILES | _OPTIONAL_FILES),
                 }
                 zf.writestr("metadata.json", json.dumps(metadata, indent=2))
             return str(backup_dir)
@@ -102,7 +132,8 @@ class StorageManager:
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(temp_dir)
+                for member in _progress(zf.infolist(), "Extracting backup", total=len(zf.infolist())):
+                    zf.extract(member, temp_dir)
 
             # Validate metadata
             meta_path = temp_dir / "metadata.json"
@@ -115,12 +146,16 @@ class StorageManager:
                 return False
 
             # Copy validated files into place
-            for arc_name, dest in [
+            restore_files = [
                 ("passwords.db", self.db_path),
                 ("salt.bin", self.salt_path),
                 ("canary.bin", self.canary_path),
                 ("security_config.json", self.security_config_path),
-            ]:
+                ("vault_key.bin", self.vault_key_path),
+                ("recovery_secret.bin", self.recovery_secret_path),
+                ("recovery_vault_key.bin", self.recovery_vault_key_path),
+            ]
+            for arc_name, dest in _progress(restore_files, "Restoring files", total=len(restore_files)):
                 src = temp_dir / arc_name
                 if src.exists():
                     shutil.copy2(src, dest)
@@ -171,18 +206,24 @@ class StorageManager:
 
         try:
             with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
-                for src_path, arc_name in [
+                files = [
                     (self.db_path, "passwords.db"),
                     (self.salt_path, "salt.bin"),
                     (self.canary_path, "canary.bin"),
-                ]:
+                    (self.security_config_path, "security_config.json"),
+                    (self.vault_key_path, "vault_key.bin"),
+                    (self.recovery_secret_path, "recovery_secret.bin"),
+                    (self.recovery_vault_key_path, "recovery_vault_key.bin"),
+                ]
+                files = [(src_path, arc_name) for src_path, arc_name in files if src_path.exists()]
+                for src_path, arc_name in _progress(files, "Exporting vault", total=len(files)):
                     if src_path.exists():
                         zf.write(src_path, arc_name)
 
                 metadata = {
                     "created": datetime.now().isoformat(),
                     "version": _BACKUP_VERSION,
-                    "files": list(_REQUIRED_FILES),
+                    "files": sorted(_REQUIRED_FILES | _OPTIONAL_FILES),
                 }
                 zf.writestr("metadata.json", json.dumps(metadata, indent=2))
             return True
@@ -207,7 +248,8 @@ class StorageManager:
 
         try:
             with zipfile.ZipFile(zip_path, "r") as zf:
-                zf.extractall(temp_dir)
+                for member in _progress(zf.infolist(), "Extracting import", total=len(zf.infolist())):
+                    zf.extract(member, temp_dir)
 
             meta_path = temp_dir / "metadata.json"
             if not meta_path.exists():
@@ -218,11 +260,16 @@ class StorageManager:
                 print("Invalid backup: metadata missing version field")
                 return False
 
-            for arc_name, dest in [
+            import_files = [
                 ("passwords.db", self.db_path),
                 ("salt.bin", self.salt_path),
                 ("canary.bin", self.canary_path),
-            ]:
+                ("security_config.json", self.security_config_path),
+                ("vault_key.bin", self.vault_key_path),
+                ("recovery_secret.bin", self.recovery_secret_path),
+                ("recovery_vault_key.bin", self.recovery_vault_key_path),
+            ]
+            for arc_name, dest in _progress(import_files, "Importing files", total=len(import_files)):
                 src = temp_dir / arc_name
                 if src.exists():
                     shutil.copy2(src, dest)
